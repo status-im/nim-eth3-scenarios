@@ -1,0 +1,149 @@
+name: Nightly vector release
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-vector-release
+  cancel-in-progress: false
+
+jobs:
+  nightly-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Ensure submodule is initialized
+        run: git submodule update --init --recursive vendor/leanspec
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            vendor/leanspec/pyproject.toml
+            vendor/leanspec/uv.lock
+          python-version: "3.12"
+
+      - name: Update leanSpec submodule to origin/main
+        id: update
+        run: |
+          set -euo pipefail
+          PREV_SHA="$(git -C vendor/leanspec rev-parse HEAD)"
+          scripts/eth3/update_leanspec_submodule.sh \
+            --ref origin/main \
+            --env-file .tmp/leanspec.env
+          NEW_SHA="$(git -C vendor/leanspec rev-parse HEAD)"
+          echo "prev_sha=${PREV_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "new_sha=${NEW_SHA}" >> "${GITHUB_OUTPUT}"
+          if [ "${PREV_SHA}" = "${NEW_SHA}" ]; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Stop if no upstream leanSpec change
+        if: steps.update.outputs.changed != 'true'
+        run: echo "No leanSpec update detected; skipping nightly release."
+
+      - name: Resolve next nightly version
+        if: steps.update.outputs.changed == 'true'
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags origin
+
+          LATEST_DEVNET="$(grep -Eo 'Devnet[[:space:]]+[0-9]+' vendor/leanspec/VERSIONS.md | awk '{print $2}' | sort -n | tail -1)"
+          if [ -z "${LATEST_DEVNET}" ]; then
+            echo "Failed to parse latest devnet from vendor/leanspec/VERSIONS.md"
+            exit 1
+          fi
+
+          MINOR="$((LATEST_DEVNET + 1))"
+          LAST_PATCH="$(git tag -l "v0.${MINOR}.*" | sed -En "s/^v0\\.${MINOR}\\.([0-9]+)$/\\1/p" | sort -n | tail -1)"
+          if [ -z "${LAST_PATCH}" ]; then
+            LAST_PATCH=0
+          fi
+
+          NEXT_PATCH="$((LAST_PATCH + 1))"
+          VERSION="v0.${MINOR}.${NEXT_PATCH}"
+          while gh release view "${VERSION}" >/dev/null 2>&1; do
+            NEXT_PATCH="$((NEXT_PATCH + 1))"
+            VERSION="v0.${MINOR}.${NEXT_PATCH}"
+          done
+
+          echo "latest_devnet=${LATEST_DEVNET}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Commit submodule bump
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          source .tmp/leanspec.env
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor/leanspec
+          if git diff --cached --quiet; then
+            echo "No submodule change to commit."
+            exit 0
+          fi
+          git commit -m "chore(leanspec): nightly pin ${LEANSPEC_SHORT_SHA}"
+          git push origin "${GITHUB_REF_NAME}"
+
+      - name: Generate vectors
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          scripts/eth3/generate_lean_spec_vectors.sh \
+            --repo-dir vendor/leanspec \
+            --out-dir lean-spec-vectors \
+            --fork Devnet
+
+      - name: Package release assets
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          scripts/eth3/package_vectors_release.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --vectors-dir lean-spec-vectors \
+            --out-dir dist \
+            --leanspec-env-file .tmp/leanspec.env \
+            --fork Devnet \
+            --env-file .tmp/release-assets.env
+
+      - name: Build release notes
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          source .tmp/leanspec.env
+          cat > dist/release-notes.md <<EOF
+          Nightly leanSpec vectors release
+
+          - release version: ${{ steps.version.outputs.version }}
+          - latest devnet: ${{ steps.version.outputs.latest_devnet }}
+          - resolved leanSpec SHA: ${LEANSPEC_SHA}
+          - workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EOF
+
+      - name: Publish GitHub release
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          source .tmp/release-assets.env
+          gh release create "${{ steps.version.outputs.version }}" \
+            "${VECTOR_TARBALL}" \
+            "${VECTOR_TARBALL_SHA256}" \
+            "${VECTOR_METADATA_ASSET}" \
+            --title "${{ steps.version.outputs.version }}" \
+            --notes-file dist/release-notes.md
