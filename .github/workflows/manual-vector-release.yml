@@ -13,10 +13,6 @@ on:
         description: "Fork argument for fill command"
         required: false
         default: Devnet
-      scheme:
-        description: "XMSS scheme for fill command"
-        required: false
-        default: prod
 
 permissions:
   contents: write
@@ -75,24 +71,27 @@ jobs:
             --ref "${{ github.event.inputs.lean_spec_ref }}" \
             --env-file .tmp/leanspec.env
 
-      - name: Generate vectors
+      - name: Generate test and prod vectors
         run: |
+          rm -rf lean-spec-vectors
           scripts/eth3/generate_lean_spec_vectors.sh \
             --repo-dir vendor/leanspec \
-            --out-dir lean-spec-vectors \
+            --out-dir lean-spec-vectors/test \
             --fork "${{ github.event.inputs.fork }}" \
-            --scheme "${{ github.event.inputs.scheme }}" \
+            --scheme test \
+            --python-version 3.12
+          scripts/eth3/generate_lean_spec_vectors.sh \
+            --repo-dir vendor/leanspec \
+            --out-dir lean-spec-vectors/prod \
+            --fork "${{ github.event.inputs.fork }}" \
+            --scheme prod \
             --python-version 3.12
 
       - name: Package release assets
         run: |
           scripts/eth3/package_vectors_release.sh \
             --version "${{ github.event.inputs.release_version }}" \
-            --vectors-dir lean-spec-vectors \
             --out-dir dist \
-            --leanspec-env-file .tmp/leanspec.env \
-            --fork "${{ github.event.inputs.fork }}" \
-            --scheme "${{ github.event.inputs.scheme }}" \
             --env-file .tmp/release-assets.env
 
       - name: Build release notes
@@ -106,7 +105,7 @@ jobs:
           - requested leanSpec SHA: ${LEANSPEC_REF_REQUESTED}
           - resolved leanSpec SHA: ${LEANSPEC_SHA}
           - fork: ${{ github.event.inputs.fork }}
-          - scheme: ${{ github.event.inputs.scheme }}
+          - included schemes: test, prod
           - workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
 
@@ -119,6 +118,5 @@ jobs:
           gh release create "${{ github.event.inputs.release_version }}" \
             "${VECTOR_TARBALL}" \
             "${VECTOR_TARBALL_SHA256}" \
-            "${VECTOR_METADATA_ASSET}" \
             --title "${{ github.event.inputs.release_version }}" \
             --notes-file dist/release-notes.md
