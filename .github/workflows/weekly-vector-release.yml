@@ -1,19 +1,19 @@
-name: Nightly vector release
+name: Weekly vector release
 
 on:
   schedule:
-    - cron: "0 3 * * *"
+    - cron: "0 3 * * 0"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: nightly-vector-release
+  group: weekly-vector-release
   cancel-in-progress: false
 
 jobs:
-  nightly-release:
+  weekly-release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -53,9 +53,9 @@ jobs:
 
       - name: Stop if no upstream leanSpec change
         if: steps.update.outputs.changed != 'true'
-        run: echo "No leanSpec update detected; skipping nightly release."
+        run: echo "No leanSpec update detected; skipping weekly release."
 
-      - name: Resolve next nightly version
+      - name: Resolve next weekly version
         if: steps.update.outputs.changed == 'true'
         id: version
         env:
@@ -98,26 +98,30 @@ jobs:
             echo "No submodule change to commit."
             exit 0
           fi
-          git commit -m "chore(leanspec): nightly pin ${LEANSPEC_SHORT_SHA}"
+          git commit -m "chore(leanspec): weekly pin ${LEANSPEC_SHORT_SHA}"
           git push origin "${GITHUB_REF_NAME}"
 
-      - name: Generate vectors
+      - name: Generate test and prod vectors
         if: steps.update.outputs.changed == 'true'
         run: |
+          rm -rf lean-spec-vectors
           scripts/eth3/generate_lean_spec_vectors.sh \
             --repo-dir vendor/leanspec \
-            --out-dir lean-spec-vectors \
-            --fork Devnet
+            --out-dir lean-spec-vectors/test \
+            --fork Devnet \
+            --scheme test
+          scripts/eth3/generate_lean_spec_vectors.sh \
+            --repo-dir vendor/leanspec \
+            --out-dir lean-spec-vectors/prod \
+            --fork Devnet \
+            --scheme prod
 
       - name: Package release assets
         if: steps.update.outputs.changed == 'true'
         run: |
           scripts/eth3/package_vectors_release.sh \
             --version "${{ steps.version.outputs.version }}" \
-            --vectors-dir lean-spec-vectors \
             --out-dir dist \
-            --leanspec-env-file .tmp/leanspec.env \
-            --fork Devnet \
             --env-file .tmp/release-assets.env
 
       - name: Build release notes
@@ -126,11 +130,12 @@ jobs:
           set -euo pipefail
           source .tmp/leanspec.env
           cat > dist/release-notes.md <<EOF
-          Nightly leanSpec vectors release
+          Weekly leanSpec vectors release
 
           - release version: ${{ steps.version.outputs.version }}
           - latest devnet: ${{ steps.version.outputs.latest_devnet }}
           - resolved leanSpec SHA: ${LEANSPEC_SHA}
+          - included schemes: test, prod
           - workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
           EOF
 
@@ -144,6 +149,5 @@ jobs:
           gh release create "${{ steps.version.outputs.version }}" \
             "${VECTOR_TARBALL}" \
             "${VECTOR_TARBALL_SHA256}" \
-            "${VECTOR_METADATA_ASSET}" \
             --title "${{ steps.version.outputs.version }}" \
             --notes-file dist/release-notes.md

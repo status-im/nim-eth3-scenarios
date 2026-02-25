@@ -5,14 +5,19 @@
 
 set -Eeuo pipefail
 
-if [[ -n "${CONSENSUS_TEST_VECTOR_VERSIONS:-}" ]]; then
-  IFS=',' read -r -a VERSIONS <<< "${CONSENSUS_TEST_VECTOR_VERSIONS}"
+dir_has_files() {
+  local d="$1"
+  [[ -d "${d}" ]] && [[ -n "$(find "${d}" -type f -print -quit)" ]]
+}
+
+if [[ -n "${LEANSPEC_TEST_VECTOR_VERSIONS:-}" ]]; then
+  IFS=',' read -r -a VERSIONS <<< "${LEANSPEC_TEST_VECTOR_VERSIONS}"
 else
   VERSIONS=("$@")
 fi
 
 if [[ "${#VERSIONS[@]}" -eq 0 ]]; then
-  echo "Set CONSENSUS_TEST_VECTOR_VERSIONS or pass at least one version (for example: v1.0.0)." >&2
+  echo "Set LEANSPEC_TEST_VECTOR_VERSIONS or pass at least one version (for example: v1.0.0)." >&2
   exit 1
 fi
 
@@ -55,7 +60,16 @@ for version in "${VERSIONS[@]}"; do
 
   rm -rf "${out_dir}"
   mkdir -p "${out_dir}"
-  tar -C "${out_dir}" --strip-components 1 "${EXTRA_TAR[@]}" -xzf "${target_dir}/${tarball_name}"
+  tar -C "${out_dir}" "${EXTRA_TAR[@]}" -xzf "${target_dir}/${tarball_name}"
+
+  if ! dir_has_files "${out_dir}/test"; then
+    echo "Missing or empty test vectors in ${out_dir}/test" >&2
+    exit 1
+  fi
+  if ! dir_has_files "${out_dir}/prod"; then
+    echo "Missing or empty prod vectors in ${out_dir}/prod" >&2
+    exit 1
+  fi
 done
 
 shopt -s nullglob
@@ -76,4 +90,4 @@ done
 
 shopt -u nullglob
 
-echo "Downloaded and unpacked versions: ${VERSIONS[*]}"
+echo "Downloaded and unpacked test/prod vectors for versions: ${VERSIONS[*]}"
