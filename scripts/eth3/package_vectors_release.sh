@@ -70,6 +70,7 @@ TARBALL_SHA256_PATH="${TARBALL_PATH}.sha256"
 
 rm -rf "${STAGING_DIR}"
 mkdir -p "${OUT_DIR}"
+mkdir -p "${STAGING_DIR}"
 
 cp -a "${TEST_VECTORS_DIR}" "${STAGING_DIR}/test"
 cp -a "${PROD_VECTORS_DIR}" "${STAGING_DIR}/prod"
